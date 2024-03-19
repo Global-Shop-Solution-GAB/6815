@@ -1,0 +1,235 @@
+﻿Program.Sub.Preflight.Start
+V.Global.bConOpen.Declare
+V.Global.sBasePath.Declare
+V.Global.sProcessedPath.Declare
+V.Global.sErrorsPath.Declare
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Written: Brandon Medina
+'Customer: Rapid Line Inc
+'Project: 6815 - Steel Case Shipments Uploader
+'Quote: 11920-0
+'Desc: Project will be running off OLU and checks Custom Table for any new records. This table can be written to by RapidLine from their program
+'As records are successfully processed, they get deleted from this table, any errors are noted and skipped over in next iteration. 
+'Date: 6/28/2022
+	'Cancel Packing list from printing 
+F.Intrinsic.Control.Try
+	V.Local.sFlagFile.Declare
+	V.Local.bFileExists.Declare
+
+	F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+		F.Intrinsic.Control.Case("16090")
+			'Cancels packing list report from printing. Checks for presence of temp flag file written in main logic 
+			F.Intrinsic.String.Build("{0}\6815_PACK_LIST_FLAG.txt", V.Caller.FilesDir, V.Local.sFlagFile)
+			F.Intrinsic.File.Exists(V.Local.sFlagFile, V.Local.bFileExists)
+			F.Intrinsic.Control.If(V.Passed.BIP_REPORTID, =,"000051", AND, V.Local.bFileExists, =, True)
+				F.Intrinsic.File.DeleteFile(V.Local.sFlagFile)
+				V.Passed.Cancel.Set(-1)
+			F.Intrinsic.Control.EndIf 
+		F.Intrinsic.Control.CaseElse
+			'Otherwise continue w/ normal execution 
+			'Check For Table 
+			F.Intrinsic.Control.CallSub(checkTable)
+			F.Intrinsic.Control.CallSub(processRecords)
+	F.Intrinsic.Control.EndSelect
+	
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMsg, CurrentSub, V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+	
+
+Program.Sub.Main.End
+
+Program.Sub.setDirectoryPaths.Start
+F.Intrinsic.Control.Try
+	V.Local.sRet.Declare
+	V.Local.bOneRecord.Declare
+	
+	'Source path will be the network folder, as specified by the maintanence program. 
+	F.ODBC.Connection!con.OpenCompanyConnection 
+	V.Global.bConOpen.Set(True)
+	F.ODBC.Connection!con.ExecuteAndReturn("select * from GCG_6815_SHIP_MAINT", V.Local.sRet)
+	F.Intrinsic.String.IsInString(V.Local.sRet, "#$#", True, V.Local.bOneRecord)
+	F.Intrinsic.Control.If(V.Local.bOneRecord)
+		F.Intrinsic.UI.Msgbox("Custom table GCG_6815_SHIP_MAINT contains more than one record. Please address this and try again.")
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.If(V.Local.sRet, <>, "")
+		V.Global.sBasePath.Set(V.Local.sRet.Trim)
+		F.ODBC.Connection!con.Close
+		V.Global.bConOpen.Set(False)
+		
+		F.Intrinsic.String.Build("{0}PROCESSED\", V.Global.sBasePath, V.Global.sProcessedPath)
+		F.Intrinsic.String.Build("{0}ERRORS\", V.Global.sBasePath, V.Global.sErrorsPath)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.UI.Msgbox("Custom table GCG_6815_SHIP_MAINT contains no records. Please address this and try again.")
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+	
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMsg, CurrentSub, V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.setDirectoryPaths.End
+
+Program.Sub.ErrorMsg.Start
+'Generic Error message.
+V.Local.sError.Declare
+
+F.Intrinsic.Control.If(V.Global.bConOpen)
+	F.ODBC.Connection!con.Close
+F.Intrinsic.Control.EndIf
+
+f.Intrinsic.String.Build("Project GCG_6815_Shipment_Upload.g2u {0}{0}Subroutine: {1}{0}Error: {2} with Description: {3}", v.Ambient.NewLine, v.Args.CurrentSub, v.Ambient.ErrorNumber, v.Ambient.ErrorDescription, v.Local.sError)
+f.Intrinsic.UI.Msgbox(v.Local.sError)
+Program.Sub.ErrorMsg.End
+
+Program.Sub.checkTable.Start
+F.Intrinsic.Control.Try
+	V.Local.bExists.Declare
+	V.Local.sSQL.Declare
+	V.Local.sRet.Declare
+	
+	F.ODBC.Connection!con.OpenCompanyConnection
+	V.Global.bConOpen.Set(True)
+	F.ODBC.Connection!con.TableExists("GCG_6815_SHIP_EXPORT", V.Local.bExists)
+	F.ODBC.Connection!con.Close
+	V.Global.bConOpen.Set(False)
+	F.Intrinsic.Control.If(V.Local.bExists.Not)
+		F.Intrinsic.UI.Msgbox("Table GCG_6815_SHIP_EXPORT does not exist. Please Redownload project from ARC")
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMsg, CurrentSub, V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.checkTable.End
+
+Program.Sub.processRecords.Start
+F.Intrinsic.Control.Try
+	V.Local.sSQL.Declare
+	V.Local.iOuterRow.Declare
+	V.Local.iRowIndex.Declare
+	V.Local.sOrder.Declare
+	V.Local.sLine.Declare
+	V.Local.sQty.Declare
+	V.Local.sBuildup.Declare
+	V.Local.sCarrier.Declare
+	V.Local.sType.Declare
+	V.Local.sRet.Declare
+	V.Local.sCarrierArray.Declare
+	V.Local.iRet.Declare
+	V.Local.sTimeRan.Declare
+	V.Local.sFlagFile.Declare
+	V.Local.sFile.Declare
+	V.Local.sFileName.Declare
+	V.Local.sFilter.Declare
+
+	F.ODBC.Connection!con.OpenCompanyConnection
+	V.Global.bConOpen.Set(True)
+	'Add Carrier code and service type from order header to custom table 
+	F.Data.DataTable.CreateFromSQL("dtRecords", "con", "select SE.*, OH.CARRIER_CD, OH.SRVC_TYPE from GCG_6815_SHIP_EXPORT SE left join V_ORDER_HEADER OH on SE.CO_NUM = OH.ORDER_NO where SE.ERR_CODE <> 1", True)
+	
+	F.Intrinsic.Control.If(V.DataTable.dtRecords.RowCount, =, 0)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndIf
+	
+	'Grab all distinct combos of Carriers and service types. Loop on that filtering each run and running ORD98HOD on that 
+	F.Intrinsic.Control.If(V.DataView.dtRecords!dvTemp.Exists)
+		F.Data.DataView.Close("dtRecords", "dvTemp")
+	F.Intrinsic.Control.EndIf
+	
+	F.Data.DataView.Create("dtRecords", "dvTemp", 22)
+	F.Data.DataView.ToDataTableDistinct("dtRecords", "dvTemp", "dtCarriers", "CARRIER_CD*!*SRVC_TYPE")
+	
+	F.Intrinsic.Control.If(V.DataTable.dtCarriers.RowCount, <>, 0)
+		F.Intrinsic.Control.For(V.Local.iOuterRow, 0, V.DataTable.dtCarriers.RowCount--, 1)
+			F.Intrinsic.Control.If(V.DataView.dtRecords!dvCarriers.Exists)
+				F.Data.DataView.Close("dtRecords", "dvCarriers")
+			F.Intrinsic.Control.EndIf
+			
+			'Filter records in dtRecords based on current carrier record being processed 
+			F.Intrinsic.String.Build("CARRIER_CD = '{0}' and SRVC_TYPE = '{1}'", V.DataTable.dtCarriers(V.Local.iOuterRow).CARRIER_CD!FieldValTrim, V.DataTable.dtCarriers(V.Local.iOuterRow).SRVC_TYPE!FieldValTrim, V.Local.sFilter)
+			F.Data.DataView.Create("dtRecords", "dvCarriers", 22, V.Local.sFilter, "")
+			
+			'Now that we have filtered dtRecords based on current unique carrier/service type. Loop on all those records 
+			'that were returned, building up the file, and run ORD98HOD for those records before moving onto the next set of records for the given carrier type 
+			F.Intrinsic.Control.For(V.Local.iRowIndex, 0, V.DataView.dtRecords!dvCarriers.RowCount--, 1)
+				V.Local.sOrder.Set(V.DataView.dtRecords!dvCarriers(V.Local.iRowIndex).CO_NUM!FieldValTrim)
+				V.Local.sLine.Set(V.DataView.dtRecords!dvCarriers(V.Local.iRowIndex).CUST_PO_LINE!FieldValTrim)
+				V.Local.sQty.Set(V.DataView.dtRecords!dvCarriers(V.Local.iRowIndex).QTY_SHIPPED!FieldValTrim)
+				'F.Intrinsic.String.Build("select distinct ORDER_NO, CARRIER_CD, SRVC_TYPE from V_ORDER_HEADER where ORDER_NO = '{0}'", V.Local.sOrder, V.Local.sSQL)
+				
+				'Build up file 
+				'Format for File to provide ORD98HOD: 
+				'order, line, Qty, Lot, Bin, Heat, Serial, Carton#, Carton Code, Pallet Serial, Pallet Code, Pallet#
+				F.Intrinsic.String.Build("{0}{1},{2},{3},,,,,,,,,,,{4}", V.Local.sBuildup, V.Local.sOrder, V.Local.sLine, V.Local.sQty, V.Ambient.NewLine, V.Local.sBuildup)
+				
+			F.Intrinsic.Control.Next(V.Local.iRowIndex)
+			
+			'Create File for Carrier run
+			F.Intrinsic.String.Build("{0}SHIPFILE.Txt",V.Caller.Terminal,V.Local.sFileName)
+			F.Intrinsic.String.Build("{0}\{1}",V.Caller.FilesDir,V.Local.sFileName,V.Local.sFile)
+			F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sBuildup)
+			
+			'All records in this dv have the same carrier/type, so set to 0th index
+			V.Local.sCarrier.Set(V.DataView.dtRecords!dvCarriers(0).CARRIER_CD!FieldValTrim)
+			V.Local.sType.Set(V.DataView.dtRecords!dvCarriers(0).SRVC_TYPE!FieldValTrim)
+			F.Intrinsic.String.RPad(V.Local.sCarrier, " ", 6, V.Local.sCarrier)
+			F.Intrinsic.String.LPad(V.Local.sType, "0", 3, V.Local.sType)
+			
+			'Set params for ORD98HOD, and run
+			F.Intrinsic.String.Build("{0}{1}SHIPFILE{2}{3}",V.Caller.CompanyCode,V.Caller.Terminal,V.Local.sCarrier,V.local.sType,V.Local.sRet)
+			F.Global.General.ReadSoftLock("SO",V.Local.sOrder,V.Local.iRet)
+			F.Intrinsic.Control.If(V.Local.iRet,=,1)
+				F.Global.General.DestroySoftLock("SO",V.Local.sOrder, V.Local.iRet)
+			F.Intrinsic.Control.EndIf
+			
+			'Need to write temp txt file to check presence of to know if Packing list report should be cancelled or not (will only exist if done from here). This allows them to print packing list from the core shipping screen still 
+			F.Intrinsic.String.Build("{0}\6815_PACK_LIST_FLAG.txt", V.Caller.FilesDir, V.Local.sFlagFile)
+			F.Intrinsic.File.String2File(V.Local.sFlagFile, "If this exists, hook 16090 will cancel report id 51 from firing")
+			F.Intrinsic.Task.LaunchGSSsync("ORD98HOD","-c",V.Local.sRet)
+			
+			'Now move onto modifying the custom table 
+			V.Local.sTimeRan.Set(V.Ambient.Now)
+			'Check for error. 
+			'If successful, then delete record from custom table, 
+			F.Intrinsic.String.Build("select ORDER_NO, ORDER_LINE from SHIPMENT_LOG where DATE_SHIP = '{0}' and (left(TIME_SHIP, 4) >= '{1}' and left(TIME_SHIP, 4) <= '{1}') and ERROR_NO = '001'", V.Local.sTimeRan.FormatYYYYMMDD, V.Local.sTimeRan.FormatHHMM, V.Local.sSQL)
+			'V.Local.sSQL.Set("select ORDER_NO, ORDER_LINE from SHIPMENT_LOG")
+			F.Data.DataTable.CreateFromSQL("dtPassed", "con", V.Local.sSQL, True)
+			
+			F.Intrinsic.Control.If(V.DataTable.dtPassed.RowCount, <>, 0)
+				F.Data.DataTable.DeleteRow("dtPassed")
+				F.Data.DataTable.AcceptChanges("dtPassed")
+				F.Data.DataTable.SaveToDB("dtPassed", "con", "GCG_6815_SHIP_EXPORT", "ORDER_NO*!*ORDER_LINE", 4, "ORDER_NO@!@CO_NUM*!*ORDER_LINE@!@CUST_PO_LINE")
+				F.Intrinsic.File.DeleteFile(V.Local.sFlagFile)
+			F.Intrinsic.Control.EndIf
+			
+			F.Data.DataTable.Close("dtPassed")
+			
+			'otherwise keep it and modify it to insert true into ERR_CODE column
+				'SHIPMENT_LOG.ERROR_NO will be populated if there is an error w any line 
+			'Filter entries that were attempted in last 2 minutes, and write an E to the custom table's error field if there is an error in the core table 
+			F.Intrinsic.String.Build("select ORDER_NO, ORDER_LINE from SHIPMENT_LOG where DATE_SHIP = '{0}' and (left(TIME_SHIP, 4) >= '{1}' and left(TIME_SHIP, 4) <= '{1}') and ERROR_NO <> '001'", V.Local.sTimeRan.FormatYYYYMMDD, V.Local.sTimeRan.FormatHHMM, V.Local.sSQL)
+			F.Data.DataTable.CreateFromSQL("dtNewErrors", "con", V.Local.sSQL, True)
+			F.Data.DataTable.AddColumn("dtNewErrors", "ERR_CODE", "Boolean", True)
+			
+			F.Intrinsic.Control.If(V.DataTable.dtNewErrors.RowCount, <>, 0)
+				F.Data.DataTable.SaveToDB("dtNewErrors", "con", "GCG_6815_SHIP_EXPORT", "ORDER_NO*!*ORDER_LINE", 256, "ORDER_NO@!@CO_NUM*!*ORDER_LINE@!@CUST_PO_LINE*!*ERR_CODE@!@ERR_CODE")
+			F.Intrinsic.Control.EndIf
+		
+			F.Data.DataTable.Close("dtNewErrors")
+		F.Intrinsic.Control.Next(V.Local.iOuterRow)
+	F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.Control.CallSub(ErrorMsg, CurrentSub, V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndTry
+Program.Sub.processRecords.End
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8286.22461$}$1
+${$6$}$bmedina$}$20230104105037506$}$kOipCrsyLBVj2KoSwkcdK23ChxGVcBlE197TarmUdXfyQn297oTWd32VqCn6UXCEkAj+8FPh9Ko=
+Program.Sub.Comments.End
